@@ -1,29 +1,29 @@
 # 📈 Stock Predictor (Android)
 
-An Android app that shows, with the date, which NIFTY 50 stocks are most likely to **rise** or
-**fall** on the next trading day. Everything runs on your phone, so there's no server or website.
+An Android app that shows, with the date, which stocks on INDmoney are most likely to **rise** or
+**fall** on the next trading day. It covers **every NSE-listed stock** (India) and the **S&P 500** (US).
 
-## Features
-- Opens straight to **"Prediction for <date>"**, plus the date of the closing prices it used
-- **Top 10 likely to rise** and **top 10 likely to fall**, each with a chance % and reasons
-  (RSI, MACD, 50-day average, 5-day move, volume spike)
-- Searchable list of all 50 stocks
-- **Track record**: remembers each day's picks and checks them against what really happened
-- Backtest accuracy on the most recent 60 trading days, so you can see how good (or not) it is
-- Tap a stock to copy its symbol and open **INDmoney** (if installed)
-- Works offline with the last saved prediction; tap **Refresh** for new data
+## How it works
+- **GitHub does the work.** `.github/workflows/predict.yml` runs every weekday after the Indian
+  market closes (5:15 PM IST) and again after the US market closes. `predictor/predict.py` downloads 2 years of
+  prices for every stock, computes 12 technical indicators (RSI, MACD, moving averages, Bollinger %B,
+  momentum, volume, market trend) and trains a logistic-regression model per market. Results are
+  saved to `data/latest.json`, and past picks are scored against what really happened in `data/history.json`.
+- **The app just reads the results** from the repo, so it opens in seconds and works offline
+  with the last saved predictions.
 
-## How it predicts
-1. Downloads 2 years of daily prices for 50 NSE stocks from Yahoo Finance.
-2. Computes 12 indicators per stock per day (returns, RSI, MACD, moving-average gaps,
-   Bollinger %B, volume ratio, volatility, market trend).
-3. Trains a logistic-regression model on all stocks' history to predict
-   "will tomorrow close higher than today?".
+## App features
+- India 🇮🇳 / US 🇺🇸 tabs, each with **"Prediction for <date>"**
+- Top 10 likely to rise and top 10 likely to fall (only actively traded stocks, no penny stocks)
+- Search any of the ~2,500 stocks to see its chance of rising and the reasons
+- Backtest accuracy (last 60 trading days) and a live track record
+- Tap a stock to copy its symbol and open INDmoney
 
 ## Get the APK
-GitHub Actions builds it on every push: open **Releases → latest** and download
-`StockPredictor.apk` on your phone, then install it (allow "Install unknown apps" when asked).
+Every push builds it: **Releases → latest → StockPredictor.apk**. Builds use a fixed signing key,
+so new versions install as updates.
 
 ## Honest limitations
-Next-day stock moves are close to random. Expect accuracy around 50–55%. News, earnings and
-NSE holidays aren't taken into account. Learning project only, not investment advice.
+Next-day moves are close to random. Expect accuracy around 50–55%. News, results and market
+holidays aren't considered. BSE-only stocks and US stocks outside the S&P 500 aren't covered.
+Learning project only, not investment advice.

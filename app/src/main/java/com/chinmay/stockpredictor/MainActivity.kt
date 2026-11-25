@@ -8,6 +8,8 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -18,7 +20,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import java.time.LocalDate
-import java.time.ZonedDateTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.Executors
 
@@ -31,6 +33,7 @@ class MainActivity : Activity() {
     private val dim = Color.parseColor("#8B93A3")
     private val up = Color.parseColor("#22C55E")
     private val down = Color.parseColor("#EF4444")
+    private val accent = Color.parseColor("#2F6FEB")
 
     private val dayFmt = DateTimeFormatter.ofPattern("EEE, d MMM yyyy")
     private val worker = Executors.newSingleThreadExecutor()
@@ -39,9 +42,10 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var progress: ProgressBar
     private lateinit var refreshBtn: Button
+    private lateinit var tabIn: Button
+    private lateinit var tabUs: Button
+    private var snapshot: Snapshot? = null
     private var running = false
-    private var showAll = false
-    private var current: Forecast? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,29 +56,38 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(20), dp(16), dp(24))
         }
         root.addView(tv("📈 Stock Predictor", 24f, fg, bold = true))
-        root.addView(tv("NIFTY 50 · Today is " + LocalDate.now(IST).format(dayFmt), 14f, dim))
+        root.addView(tv("Stocks on INDmoney · Today is " +
+            LocalDate.now(ZoneId.of("Asia/Kolkata")).format(dayFmt), 14f, dim))
+
+        val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(12), 0, 0) }
+        tabIn = Button(this).apply { text = "🇮🇳 India"; setOnClickListener { selectMarket("IN") } }
+        tabUs = Button(this).apply { text = "🇺🇸 US"; setOnClickListener { selectMarket("US") } }
+        tabIn.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        tabUs.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        tabs.addView(tabIn); tabs.addView(tabUs)
+        root.addView(tabs)
 
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(12), 0, dp(4))
+            setPadding(0, dp(6), 0, dp(4))
         }
         status = tv("", 13f, dim).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
         refreshBtn = Button(this).apply { text = "Refresh"; setOnClickListener { refresh() } }
         bar.addView(status); bar.addView(refreshBtn)
         root.addView(bar)
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            max = TICKERS.size; visibility = View.GONE
+            isIndeterminate = true; visibility = View.GONE
         }
         root.addView(progress)
 
         content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(content)
-
         setContentView(ScrollView(this).apply { setBackgroundColor(bg); addView(root) })
 
-        store.loadResult()?.let { current = it; render(it) }
-        refresh()   // always fetch fresh data when the app opens
+        snapshot = store.load()
+        render()
+        refresh()
     }
 
     override fun onDestroy() {
@@ -82,35 +95,36 @@ class MainActivity : Activity() {
         worker.shutdownNow()
     }
 
-    // ------------------------------------------------------------- work ----
+    private fun selectMarket(code: String) {
+        store.market = code
+        render()
+    }
 
     private fun refresh() {
         if (running) return
         running = true
         refreshBtn.isEnabled = false
-        progress.progress = 0
         progress.visibility = View.VISIBLE
-        status.text = "Downloading latest prices…"
+        status.setTextColor(dim)
+        status.text = "Getting today's predictions…"
         worker.execute {
             try {
-                val prices = Predictor.download { done, total ->
-                    runOnUiThread { progress.progress = done; status.text = "Downloading prices $done/$total…" }
-                }
-                runOnUiThread { status.text = "Training model…" }
-                val result = Predictor.predict(prices)
-                store.saveResult(result)
-                store.update(result, prices)
+                val latest = Remote.download("latest.json")
+                val history = try { Remote.download("history.json") } catch (_: Exception) { null }
+                val snap = Remote.parse(latest, history)
+                store.save(latest, history)
                 runOnUiThread {
                     if (isDestroyed) return@runOnUiThread
-                    current = result
-                    render(result)
-                    status.text = "Updated ${result.generatedAt}"
+                    snapshot = snap
+                    status.text = "Updated ${snap.generatedAt}"
+                    render()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
                     if (isDestroyed) return@runOnUiThread
-                    status.text = (e.message ?: "Something went wrong") +
-                        if (current != null) "\nShowing last saved prediction." else ""
+                    val msg = if (e is java.net.UnknownHostException || e is java.net.SocketTimeoutException)
+                        "No internet connection." else (e.message ?: "Something went wrong.")
+                    status.text = msg + if (snapshot != null) "\nShowing last saved predictions." else ""
                     status.setTextColor(down)
                 }
             } finally {
@@ -123,63 +137,71 @@ class MainActivity : Activity() {
                 }
             }
         }
-        status.setTextColor(dim)
     }
 
     // --------------------------------------------------------------- UI ----
 
-    private fun render(r: Forecast) {
+    private fun render() {
+        val code = store.market
+        tabIn.alpha = if (code == "IN") 1f else 0.5f
+        tabUs.alpha = if (code == "US") 1f else 0.5f
         content.removeAllViews()
+        val snap = snapshot ?: return
+        val m = snap.markets[code]
+        if (m == null) {
+            content.addView(tv("No predictions for this market yet.", 15f, dim).apply { setPadding(0, dp(20), 0, 0) })
+            return
+        }
 
-        // Date header
         content.addView(tv("Prediction for", 13f, dim).apply { setPadding(0, dp(14), 0, 0) })
-        content.addView(tv(r.predictionFor.format(dayFmt), 26f, fg, bold = true))
-        content.addView(tv("Using closing prices of ${r.dataDate.format(dayFmt)}", 13f, dim))
+        content.addView(tv(m.predictionFor.format(dayFmt), 26f, fg, bold = true))
+        content.addView(tv("${m.name} · ${m.stocks.size} stocks · using closing prices of ${m.dataDate.format(dayFmt)}", 13f, dim))
 
-        // Accuracy cards
-        val hist = store.loadHistory().filter { it.correct != null }
-        val liveOk = hist.sumOf { it.correct ?: 0 }
-        val liveTotal = hist.sumOf { it.total ?: 0 }
+        val hist = snap.history.filter { it.market == code && it.correct != null }
+        val ok = hist.sumOf { it.correct ?: 0 }
+        val total = hist.sumOf { it.total ?: 0 }
         val stats = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(12), 0, 0) }
-        stats.addView(statCard("Backtest\n(top picks)", pct(r.accTop)))
-        stats.addView(statCard("Backtest\n(all stocks)", pct(r.accAll)))
-        stats.addView(statCard("Live record\n(${hist.size} days)", if (liveTotal > 0) pct(liveOk.toDouble() / liveTotal) else "—"))
+        stats.addView(statCard("Backtest\n(top picks)", pct(m.accTop)))
+        stats.addView(statCard("Backtest\n(all stocks)", pct(m.accAll)))
+        stats.addView(statCard("Live record\n(${hist.size} days)", if (total > 0) pct(ok.toDouble() / total) else "—"))
         content.addView(stats)
 
-        // Top rise / fall
         content.addView(section("▲ Most likely to RISE", up))
-        r.stocks.take(10).forEach { content.addView(stockRow(it, rising = true)) }
+        m.topRise.mapNotNull { m.bySymbol[it] }.forEach { content.addView(stockRow(it, m.currency, rising = true)) }
         content.addView(section("▼ Most likely to FALL", down))
-        r.stocks.takeLast(10).reversed().forEach { content.addView(stockRow(it, rising = false)) }
+        m.topFall.mapNotNull { m.bySymbol[it] }.forEach { content.addView(stockRow(it, m.currency, rising = false)) }
+        content.addView(tv("Top picks only include actively traded stocks (no penny stocks).", 12f, dim).apply {
+            setPadding(0, dp(6), 0, 0)
+        })
 
-        // All stocks (search)
-        content.addView(section("All ${r.stocks.size} stocks", fg))
-        val allBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        // Search every stock
+        content.addView(section("🔍 Find any stock (${m.stocks.size})", fg))
+        val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val search = EditText(this).apply {
-            hint = "Search symbol, e.g. TCS"; setTextColor(fg); setHintTextColor(dim)
-            isSingleLine = true
+            hint = "Type a symbol, e.g. ${if (code == "IN") "IRFC" else "AAPL"}"
+            setTextColor(fg); setHintTextColor(dim); isSingleLine = true
         }
-        val toggle = Button(this).apply { text = if (showAll) "Hide list" else "Show all stocks" }
-        fun fill() {
-            allBox.removeAllViews()
-            if (!showAll) return
-            val q = search.text.toString().trim().uppercase()
-            r.stocks.filter { it.symbol.contains(q) }.forEach { allBox.addView(stockRow(it, rising = it.probUp >= 0.5)) }
-        }
-        toggle.setOnClickListener { showAll = !showAll; toggle.text = if (showAll) "Hide list" else "Show all stocks"; fill() }
-        search.addTextChangedListener(object : android.text.TextWatcher {
+        search.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun afterTextChanged(s: android.text.Editable?) { if (!showAll && s?.isNotEmpty() == true) { showAll = true; toggle.text = "Hide list" }; fill() }
+            override fun afterTextChanged(s: Editable?) {
+                results.removeAllViews()
+                val q = s?.toString()?.trim()?.uppercase() ?: ""
+                if (q.isEmpty()) return
+                val starts = m.stocks.filter { it.symbol.startsWith(q) }
+                val contains = m.stocks.filter { !it.symbol.startsWith(q) && it.symbol.contains(q) }
+                val hits = (starts.sortedBy { it.symbol.length } + contains).take(30)
+                if (hits.isEmpty()) results.addView(tv("No stock found for \"$q\".", 13f, dim))
+                hits.forEach { results.addView(stockRow(it, m.currency, rising = it.probUp >= 0.5)) }
+            }
         })
-        content.addView(search); content.addView(toggle); content.addView(allBox)
-        fill()
+        content.addView(search); content.addView(results)
 
         // Track record
         content.addView(section("Track record (were past picks right?)", fg))
         if (hist.isEmpty()) {
-            content.addView(tv("Nothing scored yet. Open the app again after the next trading day closes " +
-                "and it will check today's picks against what really happened.", 13f, dim))
+            content.addView(tv("Nothing scored yet. After each prediction day closes, the picks are checked " +
+                "against what really happened and shown here.", 13f, dim))
         } else {
             hist.sortedByDescending { it.forDate }.take(30).forEach { p ->
                 val acc = (p.correct ?: 0).toDouble() / (p.total ?: 1)
@@ -192,11 +214,6 @@ class MainActivity : Activity() {
             }
         }
 
-        if (r.failed.isNotEmpty()) {
-            content.addView(tv("Couldn't download: " + r.failed.joinToString(", "), 12f, dim).apply { setPadding(0, dp(14), 0, 0) })
-        }
-
-        // Disclaimer
         content.addView(tv(
             "⚠️ These are statistical guesses from past price patterns (RSI, MACD, moving averages, momentum, volume), " +
                 "not knowledge of the future. Next-day moves are close to random, so even a good model is right only a bit " +
@@ -210,7 +227,7 @@ class MainActivity : Activity() {
         })
     }
 
-    private fun stockRow(s: StockPred, rising: Boolean): View {
+    private fun stockRow(s: Stock, currency: String, rising: Boolean): View {
         val chance = if (rising) s.probUp else 1 - s.probUp
         val color = if (rising) up else down
         val row = LinearLayout(this).apply {
@@ -220,20 +237,19 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) }
             setOnClickListener { openInIndmoney(s.symbol) }
         }
-        val left = LinearLayout(this).apply {
+        row.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             addView(tv(s.symbol, 16f, fg, bold = true))
-            addView(tv(s.reasons.joinToString(" · "), 12f, dim))
-        }
-        val right = LinearLayout(this).apply {
+            addView(tv(s.reasons, 12f, dim))
+        })
+        row.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.END
             addView(tv((if (rising) "▲ " else "▼ ") + pct(chance), 16f, color, bold = true).apply { gravity = Gravity.END })
-            addView(tv("₹%,.2f".format(s.close), 12f, fg).apply { gravity = Gravity.END })
+            addView(tv(currency + "%,.2f".format(s.close), 12f, fg).apply { gravity = Gravity.END })
             addView(tv("%+.2f%% today".format(s.changePct), 12f, if (s.changePct >= 0) up else down).apply { gravity = Gravity.END })
-        }
-        row.addView(left); row.addView(right)
+        })
         return row
     }
 
@@ -242,10 +258,10 @@ class MainActivity : Activity() {
         cm.setPrimaryClip(ClipData.newPlainText("symbol", symbol))
         val launch = packageManager.getLaunchIntentForPackage("in.indwealth")
         if (launch != null) {
-            Toast.makeText(this, "$symbol copied — paste it in INDmoney search", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "$symbol copied. Paste it in INDmoney search.", Toast.LENGTH_LONG).show()
             startActivity(launch)
         } else {
-            Toast.makeText(this, "$symbol copied. Search it in INDmoney or any broker app.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "$symbol copied. Search it in INDmoney.", Toast.LENGTH_LONG).show()
         }
     }
 

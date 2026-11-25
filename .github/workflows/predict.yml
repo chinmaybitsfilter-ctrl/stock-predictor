@@ -1,0 +1,38 @@
+name: Daily predictions
+
+on:
+  schedule:
+    - cron: "45 11 * * 1-5"   # 5:15 PM IST, after NSE closes
+    - cron: "45 21 * * 1-5"   # after the US market closes
+  push:
+    branches: [main]
+    paths: ["predictor/predict.py", "requirements.txt", ".github/workflows/predict.yml"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: predictions
+  cancel-in-progress: false
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python predictor/predict.py
+      - name: Save predictions to the repo (the app reads them from here)
+        run: |
+          git config user.name "prediction-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data predictor/*.txt
+          git diff --cached --quiet && exit 0
+          git commit -m "Predictions $(date -u +%Y-%m-%d\ %H:%M) UTC"
+          for i in 1 2 3; do git pull --rebase -q && git push && break; sleep 5; done
